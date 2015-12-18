@@ -1,0 +1,95 @@
+require "kemal"
+require "process"
+require "redis"
+require "secure_random"
+require "json"
+require "./jarvis-api/action"
+require "./jarvis-api/slack"
+require "./jarvis-api/play_sound"
+
+class Rule
+  def succeed : Action
+    Action.new
+  end
+
+  def fail : Action
+    Action.new
+  end
+end
+
+class MacaddressConnected < Rule
+  class Data
+    JSON.mapping({
+      address: String,
+      from:    Int32,
+      to:      Int32,
+      file:    String,
+    })
+  end
+
+  def initialize(@address : String, @from : Int, @to : Int, @file : String)
+  end
+
+  def process(address : String) : Action
+    return fail if address.upcase != @address.upcase
+    return succeed if @from < Time.now.hour < @to 
+    fail
+  end
+
+  def succeed : Action
+    #PlaySound.new @file
+    Slack.new
+  end
+end
+
+
+redis = Redis.new
+
+get "/" do |env|
+  "Hello World!"
+end
+
+put "/wifi/connected" do |env|
+  params = env.params
+  data = {
+    :address => params["address"] as String,
+    :from    => params["from"] as Int,
+    :to      => params["to"] as Int,
+    :file    => params["file"] as String,
+  }
+  redis.hset("rules", SecureRandom.hex, data.to_json)
+end
+
+post "/wifi/connected" do |env|
+  redis.hgetall("rules").each_slice(2) do |item|
+    id, value = item
+    next unless value
+    case value
+    when String
+      data = MacaddressConnected::Data.from_json(value)
+      rule = MacaddressConnected.new data.address,
+        data.from,
+        data.to,
+        data.file
+      rule.process(env.params["address"] as String).run
+    else
+      next
+    end
+  end
+end
+
+require "./action"
+
+class Slack < Action
+  def run 
+    uri = "https://hooks.slack.com/services/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"
+    body = {"channel": "#jarvis",
+            "username": "webhookbot",
+            "text": "Vigyazzjon",
+            "icon_emoji": ":ghost:"}.to_json
+    payload = "payload='#{body}'"
+
+    `curl -X POST --data-urlencode #{payload} #{uri}`
+    true
+  end
+end
